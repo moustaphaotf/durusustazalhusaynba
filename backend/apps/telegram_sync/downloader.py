@@ -70,11 +70,15 @@ def _storage_key(teaching: Teaching, extension: str) -> str:
 
 @transaction.atomic
 def claim_pending_teachings(batch_size: int) -> list[Teaching]:
-    """Atomically move up to `batch_size` pending teachings to PROCESSING."""
+    """Atomically move up to `batch_size` pending teachings to PROCESSING.
+
+    Newest publications first so the catalog (ordered by -published_at)
+    fills with playable audio before older backlog items.
+    """
     teachings = list(
         Teaching.objects.select_for_update(skip_locked=True)
         .filter(download_status=Teaching.DownloadStatus.PENDING)
-        .order_by("published_at", "telegram_message_id")[:batch_size]
+        .order_by("-published_at", "-telegram_message_id")[:batch_size]
     )
     ids = [t.pk for t in teachings]
     if ids:
