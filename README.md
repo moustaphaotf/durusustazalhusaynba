@@ -103,6 +103,24 @@ Pour contrôler ensuite la session et l'accès au canal :
 docker compose exec backend python manage.py telegram_status
 ```
 
+## Synchronisation historique
+
+Après authentification, importer les messages audio du canal :
+
+```bash
+# Test sans écriture en base
+docker compose exec backend python manage.py sync_history --limit 50 --dry-run
+
+# Sync métadonnées (recommandé pour commencer)
+docker compose exec backend python manage.py sync_history --limit 100
+
+# Sync + téléchargement des fichiers audio
+docker compose exec backend python manage.py sync_history --limit 20 --download
+```
+
+Sans `--limit`, toute l'historique du canal est parcouru (peut être long).
+Les fichiers téléchargés sont stockés dans `backend/media/teachings/`.
+
 ## Feuille de route
 
 1. **Étape 1 (actuelle)** — Monorepo, Django/DRF, Postgres, Docker, squelette TanStack Start

@@ -9,7 +9,8 @@ class Teaching(models.Model):
 
     telegram_message_id = models.BigIntegerField()
     telegram_channel_id = models.BigIntegerField()
-    title = models.CharField(max_length=500, blank=True)
+    title_ar = models.CharField(max_length=500, blank=True)
+    title_fr = models.CharField(max_length=500, blank=True)
     description = models.TextField(blank=True)
     media_type = models.CharField(
         max_length=20,
@@ -19,6 +20,7 @@ class Teaching(models.Model):
     telegram_file_id = models.CharField(max_length=255, blank=True)
     file_name = models.CharField(max_length=500, blank=True)
     file_size = models.BigIntegerField(null=True, blank=True)
+    local_path = models.CharField(max_length=500, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
     category = models.ForeignKey(
         "categories.Category",
@@ -44,4 +46,4 @@ class Teaching(models.Model):
         ]
 
     def __str__(self) -> str:
-        return self.title or f"Teaching #{self.telegram_message_id}"
+        return self.title_ar or self.title_fr or f"Teaching #{self.telegram_message_id}"

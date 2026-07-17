@@ -1,11 +1,46 @@
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
+
+from apps.teachings.models import Teaching
 from apps.telegram_sync.client import create_telegram_client
 from apps.telegram_sync.config import TelegramConfig, get_telegram_config
+from apps.telegram_sync.messages import (
+    detect_media_type,
+    message_to_teaching_payload,
+    parse_caption_titles,
+)
+from apps.telegram_sync.sync import upsert_teaching
+from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeFilename
+
+SAMPLE_CAPTION = """\
+✅حكم اقتناء الصور وأقسامها في الفقه الإسلامي
+
+✅👉Le jugement juridique relatif à la possession des images et leurs différentes catégories en droit islamique (fiqh).
+
+Durus Ustaz Alhusayny Ba(dkr)🔦                                     👇🌴دروس أستاذالحسين با(دكار)🔦
+https://t.me/durusustazalhusaynba
+"""
+
+
+def _message(**kwargs):
+    defaults = {
+        "id": 42,
+        "message": "Premier enseignement\nDétails",
+        "date": datetime(2024, 1, 15, tzinfo=timezone.utc),
+        "audio": None,
+        "voice": None,
+        "document": None,
+        "media": None,
+    }
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
 
 class TelegramConfigTests(SimpleTestCase):
     @override_settings(TELEGRAM_API_ID=None, TELEGRAM_API_HASH="")
@@ -49,3 +84,140 @@ class TelegramClientTests(SimpleTestCase):
             config.api_id,
             config.api_hash,
         )
+
+
+class CaptionTitleParsingTests(SimpleTestCase):
+    def test_parses_bilingual_caption(self):
+        title_ar, title_fr = parse_caption_titles(SAMPLE_CAPTION)
+
+        self.assertEqual(
+            title_ar,
+            "حكم اقتناء الصور وأقسامها في الفقه الإسلامي",
+        )
+        self.assertEqual(
+            title_fr,
+            "Le jugement juridique relatif à la possession des images "
+            "et leurs différentes catégories en droit islamique (fiqh).",
+        )
+        self.assertNotIn("t.me/", title_ar)
+        self.assertNotIn("t.me/", title_fr)
+        self.assertNotIn("Durus", title_fr)
+        self.assertNotIn("✅", title_ar)
+        self.assertNotIn("👉", title_fr)
+
+    def test_empty_caption(self):
+        self.assertEqual(parse_caption_titles(""), ("", ""))
+        self.assertEqual(parse_caption_titles("   \n  "), ("", ""))
+
+    def test_arabic_only(self):
+        title_ar, title_fr = parse_caption_titles("✅عنوان عربي فقط\n\nhttps://t.me/x")
+        self.assertEqual(title_ar, "عنوان عربي فقط")
+        self.assertEqual(title_fr, "")
+
+    def test_french_only(self):
+        title_ar, title_fr = parse_caption_titles(
+            "✅👉Un titre uniquement en français.\n\nDurus Ustaz foo"
+        )
+        self.assertEqual(title_ar, "")
+        self.assertEqual(title_fr, "Un titre uniquement en français.")
+
+
+class MessageMappingTests(SimpleTestCase):
+    def test_ignores_non_audio_messages(self):
+        message = _message(message="Texte seul")
+        self.assertIsNone(detect_media_type(message))
+        self.assertIsNone(message_to_teaching_payload(message, -1001))
+
+    def test_maps_audio_document_with_bilingual_caption(self):
+        document = SimpleNamespace(
+            id=987654321,
+            size=2048,
+            mime_type="audio/mpeg",
+            attributes=[
+                DocumentAttributeAudio(duration=120, voice=False, title="Cours Aqida"),
+                DocumentAttributeFilename(file_name="cours.mp3"),
+            ],
+        )
+        message = _message(
+            audio=document,
+            document=document,
+            media=document,
+            message=SAMPLE_CAPTION,
+        )
+
+        payload = message_to_teaching_payload(message, -1001087177387)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload.media_type, Teaching.MediaType.AUDIO)
+        self.assertEqual(
+            payload.title_ar,
+            "حكم اقتناء الصور وأقسامها في الفقه الإسلامي",
+        )
+        self.assertIn("jugement juridique", payload.title_fr)
+        self.assertEqual(payload.description, SAMPLE_CAPTION.strip())
+        self.assertEqual(payload.file_name, "cours.mp3")
+        self.assertEqual(payload.telegram_file_id, "987654321")
+        self.assertEqual(payload.telegram_message_id, 42)
+
+    def test_falls_back_to_audio_metadata_when_caption_empty(self):
+        document = SimpleNamespace(
+            id=987654321,
+            size=2048,
+            mime_type="audio/mpeg",
+            attributes=[
+                DocumentAttributeAudio(duration=120, voice=False, title="Cours Aqida"),
+                DocumentAttributeFilename(file_name="cours.mp3"),
+            ],
+        )
+        message = _message(
+            audio=document,
+            document=document,
+            media=document,
+            message="",
+        )
+
+        payload = message_to_teaching_payload(message, -1001087177387)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload.title_ar, "Cours Aqida")
+        self.assertEqual(payload.title_fr, "")
+
+    def test_maps_voice_notes(self):
+        document = SimpleNamespace(
+            id=111,
+            size=512,
+            mime_type="audio/ogg",
+            attributes=[DocumentAttributeAudio(duration=10, voice=True)],
+        )
+        message = _message(voice=document, document=document, message="")
+
+        payload = message_to_teaching_payload(message, -1001)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload.media_type, Teaching.MediaType.VOICE)
+
+
+class UpsertTeachingTests(TestCase):
+    def test_upsert_is_idempotent(self):
+        document = SimpleNamespace(
+            id=1,
+            size=100,
+            mime_type="audio/mpeg",
+            attributes=[DocumentAttributeFilename(file_name="a.mp3")],
+        )
+        message = _message(audio=document, document=document, message=SAMPLE_CAPTION)
+        payload = message_to_teaching_payload(message, -1001)
+        assert payload is not None
+
+        first, created_first = upsert_teaching(payload)
+        second, created_second = upsert_teaching(payload)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Teaching.objects.count(), 1)
+        self.assertTrue(first.title_ar)
+        self.assertTrue(first.title_fr)
