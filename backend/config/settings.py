@@ -120,6 +120,10 @@ CORS_ALLOWED_ORIGINS = [
 TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"]) if os.environ.get("TELEGRAM_API_ID") else None
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 TELEGRAM_CHANNEL_ID = int(os.environ.get("TELEGRAM_CHANNEL_ID", "-1001087177387"))
+TELEGRAM_CHANNEL_USERNAME = os.environ.get(
+    "TELEGRAM_CHANNEL_USERNAME",
+    "durusustazalhusaynba",
+)
 TELEGRAM_SESSION_PATH = os.environ.get(
     "TELEGRAM_SESSION_PATH",
     str(BASE_DIR / "sessions" / "durus"),

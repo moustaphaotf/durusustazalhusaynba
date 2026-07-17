@@ -9,7 +9,8 @@ from apps.telegram_sync.sync import sync_channel_history
 
 class Command(BaseCommand):
     help = (
-        "Synchronize historical audio messages from the configured Telegram channel."
+        "Synchronize historical audio messages from the configured Telegram channel. "
+        "Runs sequentially (newest → oldest) and resumes from the saved cursor."
     )
 
     def add_arguments(self, parser):
@@ -17,7 +18,7 @@ class Command(BaseCommand):
             "--limit",
             type=int,
             default=None,
-            help="Maximum number of channel messages to scan (newest first).",
+            help="Maximum number of channel messages to scan in this run.",
         )
         parser.add_argument(
             "--download",
@@ -28,6 +29,11 @@ class Command(BaseCommand):
             "--dry-run",
             action="store_true",
             help="Scan and report matches without writing to the database.",
+        )
+        parser.add_argument(
+            "--reset",
+            action="store_true",
+            help="Ignore the saved cursor and restart history from the newest messages.",
         )
 
     def handle(self, *args, **options):
@@ -41,6 +47,7 @@ class Command(BaseCommand):
                     limit=limit,
                     download=options["download"],
                     dry_run=options["dry_run"],
+                    reset=options["reset"],
                 )
             )
         except (ImproperlyConfigured, OSError, RPCError, RuntimeError, ValueError) as exc:
@@ -54,3 +61,8 @@ class Command(BaseCommand):
         self.stdout.write(f"Updated: {stats.updated}")
         self.stdout.write(f"Downloaded: {stats.downloaded}")
         self.stdout.write(f"Skipped (non-audio): {stats.skipped}")
+        self.stdout.write(f"Resume offset_id: {stats.offset_id}")
+        self.stdout.write(f"Cursor oldest: {stats.oldest_synced_message_id}")
+        self.stdout.write(f"Cursor newest: {stats.newest_synced_message_id}")
+        if stats.history_complete:
+            self.stdout.write(self.style.SUCCESS("History cursor marked complete."))

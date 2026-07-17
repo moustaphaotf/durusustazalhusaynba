@@ -5,12 +5,14 @@ from pathlib import Path
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
+from django.utils import timezone
 from telethon.tl.custom.message import Message
 
 from apps.teachings.models import Teaching
 from apps.telegram_sync.client import create_telegram_client
 from apps.telegram_sync.config import TelegramConfig, get_telegram_config
 from apps.telegram_sync.messages import TeachingPayload, message_to_teaching_payload
+from apps.telegram_sync.models import ChannelSyncState
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,10 @@ class SyncStats:
     updated: int = 0
     downloaded: int = 0
     skipped: int = 0
+    offset_id: int | None = None
+    oldest_synced_message_id: int | None = None
+    newest_synced_message_id: int | None = None
+    history_complete: bool = False
 
 
 def upsert_teaching(payload: TeachingPayload) -> tuple[Teaching, bool]:
@@ -28,6 +34,7 @@ def upsert_teaching(payload: TeachingPayload) -> tuple[Teaching, bool]:
         telegram_channel_id=payload.telegram_channel_id,
         telegram_message_id=payload.telegram_message_id,
         defaults={
+            "telegram_message_url": payload.telegram_message_url,
             "title_ar": payload.title_ar,
             "title_fr": payload.title_fr,
             "description": payload.description,
@@ -45,6 +52,77 @@ def teaching_media_relative_path(payload: TeachingPayload) -> str:
     extension = Path(payload.file_name).suffix if payload.file_name else ".ogg"
     safe_name = f"{payload.telegram_message_id}{extension}"
     return str(Path("teachings") / safe_name)
+
+
+def get_or_create_sync_state(channel_id: int) -> ChannelSyncState:
+    state, _ = ChannelSyncState.objects.get_or_create(channel_id=channel_id)
+    return state
+
+
+def history_offset_id(state: ChannelSyncState) -> int | None:
+    """Telethon offset_id to continue older history, or None to start from newest."""
+    return state.oldest_synced_message_id
+
+
+def reset_sync_state(state: ChannelSyncState) -> ChannelSyncState:
+    state.newest_synced_message_id = None
+    state.oldest_synced_message_id = None
+    state.history_complete = False
+    state.last_synced_at = timezone.now()
+    state.save(
+        update_fields=[
+            "newest_synced_message_id",
+            "oldest_synced_message_id",
+            "history_complete",
+            "last_synced_at",
+        ]
+    )
+    return state
+
+
+def advance_sync_state(
+    state: ChannelSyncState,
+    *,
+    scanned_ids: list[int],
+) -> ChannelSyncState:
+    """Update cursor after a history batch (newest → oldest)."""
+    if not scanned_ids:
+        if state.oldest_synced_message_id is not None:
+            state.history_complete = True
+        state.last_synced_at = timezone.now()
+        state.save(update_fields=["history_complete", "last_synced_at"])
+        return state
+
+    batch_min = min(scanned_ids)
+    batch_max = max(scanned_ids)
+
+    if state.newest_synced_message_id is None:
+        state.newest_synced_message_id = batch_max
+    else:
+        state.newest_synced_message_id = max(
+            state.newest_synced_message_id,
+            batch_max,
+        )
+
+    if state.oldest_synced_message_id is None:
+        state.oldest_synced_message_id = batch_min
+    else:
+        state.oldest_synced_message_id = min(
+            state.oldest_synced_message_id,
+            batch_min,
+        )
+
+    state.history_complete = False
+    state.last_synced_at = timezone.now()
+    state.save(
+        update_fields=[
+            "newest_synced_message_id",
+            "oldest_synced_message_id",
+            "history_complete",
+            "last_synced_at",
+        ]
+    )
+    return state
 
 
 async def _download_teaching_media(
@@ -66,6 +144,7 @@ async def sync_channel_history(
     limit: int | None = None,
     download: bool = False,
     dry_run: bool = False,
+    reset: bool = False,
     config: TelegramConfig | None = None,
 ) -> SyncStats:
     telegram_config = config or get_telegram_config()
@@ -77,6 +156,14 @@ async def sync_channel_history(
     updated = 0
     downloaded = 0
     skipped = 0
+    scanned_ids: list[int] = []
+
+    state = await sync_to_async(get_or_create_sync_state)(telegram_config.channel_id)
+    if reset and not dry_run:
+        state = await sync_to_async(reset_sync_state)(state)
+        offset_id = None
+    else:
+        offset_id = None if reset else history_offset_id(state)
 
     await client.connect()
     try:
@@ -86,14 +173,20 @@ async def sync_channel_history(
                 "Run `python manage.py telegram_login` first."
             )
 
+        iter_kwargs: dict = {"limit": limit}
+        if offset_id is not None:
+            iter_kwargs["offset_id"] = offset_id
+
         async for message in client.iter_messages(
             telegram_config.channel_id,
-            limit=limit,
+            **iter_kwargs,
         ):
             scanned += 1
+            scanned_ids.append(message.id)
             payload = message_to_teaching_payload(
                 message,
                 telegram_config.channel_id,
+                channel_username=telegram_config.channel_username,
             )
             if payload is None:
                 skipped += 1
@@ -109,7 +202,7 @@ async def sync_channel_history(
             else:
                 updated += 1
 
-            if download and message.media:
+            if download and message.media and not teaching.local_path:
                 relative_path = await _download_teaching_media(message, payload)
                 if relative_path:
                     teaching.local_path = relative_path
@@ -120,6 +213,12 @@ async def sync_channel_history(
     finally:
         await client.disconnect()
 
+    if not dry_run:
+        state = await sync_to_async(advance_sync_state)(
+            state,
+            scanned_ids=scanned_ids,
+        )
+
     return SyncStats(
         scanned=scanned,
         matched=matched,
@@ -127,4 +226,8 @@ async def sync_channel_history(
         updated=updated,
         downloaded=downloaded,
         skipped=skipped,
+        offset_id=offset_id,
+        oldest_synced_message_id=state.oldest_synced_message_id,
+        newest_synced_message_id=state.newest_synced_message_id,
+        history_complete=state.history_complete,
     )

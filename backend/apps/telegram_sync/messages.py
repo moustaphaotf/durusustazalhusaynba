@@ -8,6 +8,7 @@ from telethon.tl.custom.message import Message
 from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeFilename
 
 from apps.teachings.models import Teaching
+from apps.telegram_sync.config import build_message_url
 
 TITLE_MAX_LENGTH = 500
 
@@ -26,6 +27,7 @@ _FOOTER_ARABIC_BRAND_RE = re.compile(r"دروس.*أستاذ|أستاذ.*دروس
 class TeachingPayload:
     telegram_message_id: int
     telegram_channel_id: int
+    telegram_message_url: str
     title_ar: str
     title_fr: str
     description: str
@@ -142,6 +144,7 @@ def detect_media_type(message: Message) -> str | None:
 def message_to_teaching_payload(
     message: Message,
     channel_id: int,
+    channel_username: str = "",
 ) -> TeachingPayload | None:
     media_type = detect_media_type(message)
     if media_type is None:
@@ -159,10 +162,16 @@ def message_to_teaching_payload(
     file_name = _document_file_name(message)
     file_size = document.size if document is not None else None
     telegram_file_id = str(document.id) if document is not None else ""
+    telegram_message_url = build_message_url(
+        message_id=message.id,
+        channel_id=channel_id,
+        channel_username=channel_username,
+    )
 
     return TeachingPayload(
         telegram_message_id=message.id,
         telegram_channel_id=channel_id,
+        telegram_message_url=telegram_message_url,
         title_ar=title_ar,
         title_fr=title_fr,
         description=description,

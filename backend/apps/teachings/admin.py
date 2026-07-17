@@ -13,6 +13,7 @@ class TeachingAdmin(admin.ModelAdmin):
         "category",
         "published_at",
         "telegram_message_id",
+        "telegram_message_url",
         "local_path",
     )
     list_filter = ("media_type", "category")

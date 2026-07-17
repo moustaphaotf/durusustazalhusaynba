@@ -9,6 +9,7 @@ class Teaching(models.Model):
 
     telegram_message_id = models.BigIntegerField()
     telegram_channel_id = models.BigIntegerField()
+    telegram_message_url = models.URLField(max_length=500, blank=True)
     title_ar = models.CharField(max_length=500, blank=True)
     title_fr = models.CharField(max_length=500, blank=True)
     description = models.TextField(blank=True)

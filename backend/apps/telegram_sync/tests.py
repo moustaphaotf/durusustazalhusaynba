@@ -9,13 +9,24 @@ from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.teachings.models import Teaching
 from apps.telegram_sync.client import create_telegram_client
-from apps.telegram_sync.config import TelegramConfig, get_telegram_config
+from apps.telegram_sync.config import (
+    TelegramConfig,
+    build_message_url,
+    get_telegram_config,
+)
 from apps.telegram_sync.messages import (
     detect_media_type,
     message_to_teaching_payload,
     parse_caption_titles,
 )
-from apps.telegram_sync.sync import upsert_teaching
+from apps.telegram_sync.models import ChannelSyncState
+from apps.telegram_sync.sync import (
+    advance_sync_state,
+    get_or_create_sync_state,
+    history_offset_id,
+    reset_sync_state,
+    upsert_teaching,
+)
 from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeFilename
 
 SAMPLE_CAPTION = """\
@@ -59,12 +70,36 @@ class TelegramConfigTests(SimpleTestCase):
                 TELEGRAM_API_ID=12345,
                 TELEGRAM_API_HASH="test-hash",
                 TELEGRAM_CHANNEL_ID=-1001234567890,
+                TELEGRAM_CHANNEL_USERNAME="examplechannel",
                 TELEGRAM_SESSION_PATH=str(session_path),
             ):
                 config = get_telegram_config()
 
             self.assertEqual(config.session_path, session_path)
+            self.assertEqual(config.channel_username, "examplechannel")
             self.assertTrue(session_path.parent.is_dir())
+
+
+class BuildMessageUrlTests(SimpleTestCase):
+    def test_uses_username_when_present(self):
+        self.assertEqual(
+            build_message_url(
+                message_id=42,
+                channel_id=-1001087177387,
+                channel_username="durusustazalhusaynba",
+            ),
+            "https://t.me/durusustazalhusaynba/42",
+        )
+
+    def test_falls_back_to_private_path(self):
+        self.assertEqual(
+            build_message_url(
+                message_id=42,
+                channel_id=-1001087177387,
+                channel_username="",
+            ),
+            "https://t.me/c/1087177387/42",
+        )
 
 
 class TelegramClientTests(SimpleTestCase):
@@ -74,6 +109,7 @@ class TelegramClientTests(SimpleTestCase):
             api_id=12345,
             api_hash="test-hash",
             channel_id=-1001234567890,
+            channel_username="demo",
             session_path=Path("/tmp/durus"),
         )
 
@@ -145,7 +181,11 @@ class MessageMappingTests(SimpleTestCase):
             message=SAMPLE_CAPTION,
         )
 
-        payload = message_to_teaching_payload(message, -1001087177387)
+        payload = message_to_teaching_payload(
+            message,
+            -1001087177387,
+            channel_username="durusustazalhusaynba",
+        )
 
         self.assertIsNotNone(payload)
         assert payload is not None
@@ -159,6 +199,10 @@ class MessageMappingTests(SimpleTestCase):
         self.assertEqual(payload.file_name, "cours.mp3")
         self.assertEqual(payload.telegram_file_id, "987654321")
         self.assertEqual(payload.telegram_message_id, 42)
+        self.assertEqual(
+            payload.telegram_message_url,
+            "https://t.me/durusustazalhusaynba/42",
+        )
 
     def test_falls_back_to_audio_metadata_when_caption_empty(self):
         document = SimpleNamespace(
@@ -200,6 +244,31 @@ class MessageMappingTests(SimpleTestCase):
         self.assertEqual(payload.media_type, Teaching.MediaType.VOICE)
 
 
+class SyncStateTests(TestCase):
+    def test_cursor_advances_and_resumes(self):
+        state = get_or_create_sync_state(-1001)
+        self.assertIsNone(history_offset_id(state))
+
+        state = advance_sync_state(state, scanned_ids=[300, 250, 200])
+        self.assertEqual(state.newest_synced_message_id, 300)
+        self.assertEqual(state.oldest_synced_message_id, 200)
+        self.assertEqual(history_offset_id(state), 200)
+        self.assertFalse(state.history_complete)
+
+        state = advance_sync_state(state, scanned_ids=[199, 150])
+        self.assertEqual(state.oldest_synced_message_id, 150)
+        self.assertEqual(state.newest_synced_message_id, 300)
+
+        state = advance_sync_state(state, scanned_ids=[])
+        self.assertTrue(state.history_complete)
+
+        state = reset_sync_state(state)
+        self.assertIsNone(state.oldest_synced_message_id)
+        self.assertIsNone(state.newest_synced_message_id)
+        self.assertFalse(state.history_complete)
+        self.assertEqual(ChannelSyncState.objects.count(), 1)
+
+
 class UpsertTeachingTests(TestCase):
     def test_upsert_is_idempotent(self):
         document = SimpleNamespace(
@@ -209,7 +278,11 @@ class UpsertTeachingTests(TestCase):
             attributes=[DocumentAttributeFilename(file_name="a.mp3")],
         )
         message = _message(audio=document, document=document, message=SAMPLE_CAPTION)
-        payload = message_to_teaching_payload(message, -1001)
+        payload = message_to_teaching_payload(
+            message,
+            -1001,
+            channel_username="durusustazalhusaynba",
+        )
         assert payload is not None
 
         first, created_first = upsert_teaching(payload)
@@ -221,3 +294,7 @@ class UpsertTeachingTests(TestCase):
         self.assertEqual(Teaching.objects.count(), 1)
         self.assertTrue(first.title_ar)
         self.assertTrue(first.title_fr)
+        self.assertEqual(
+            first.telegram_message_url,
+            "https://t.me/durusustazalhusaynba/42",
+        )

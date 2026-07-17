@@ -105,21 +105,30 @@ docker compose exec backend python manage.py telegram_status
 
 ## Synchronisation historique
 
-Après authentification, importer les messages audio du canal :
+Après authentification, importer les messages audio du canal **par lots**
+(du plus récent vers le plus ancien). Un curseur `ChannelSyncState` mémorise
+jusqu'où l'historique a été parcouru ; le prochain run reprend automatiquement.
 
 ```bash
-# Test sans écriture en base
+# Test sans écriture en base (ne déplace pas le curseur)
 docker compose exec backend python manage.py sync_history --limit 50 --dry-run
 
-# Sync métadonnées (recommandé pour commencer)
+# Premier lot de métadonnées
 docker compose exec backend python manage.py sync_history --limit 100
 
-# Sync + téléchargement des fichiers audio
+# Lot suivant (reprend après le curseur)
+docker compose exec backend python manage.py sync_history --limit 100
+
+# Sync + téléchargement (ignore les fichiers déjà présents en local)
 docker compose exec backend python manage.py sync_history --limit 20 --download
+
+# Recommencer l'historique depuis les messages les plus récents
+docker compose exec backend python manage.py sync_history --limit 100 --reset
 ```
 
-Sans `--limit`, toute l'historique du canal est parcouru (peut être long).
+Sans `--limit`, le lot parcourt tout ce qui reste jusqu'au début du canal.
 Les fichiers téléchargés sont stockés dans `backend/media/teachings/`.
+Chaque enseignement stocke aussi le permalink Telegram (`telegram_message_url`).
 
 ## Feuille de route
 
