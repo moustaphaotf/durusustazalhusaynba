@@ -156,6 +156,93 @@ GET /api/teachings/{id}/media/
 # { "url": "https://...r2...signed", "expires_in": 3600 }
 ```
 
+## Déploiement production (Traefik)
+
+Stack cible : `docker-compose.prod.yml` sur un VPS avec Traefik et un network Docker externe nommé `proxy`. Seuls **frontend** et **backend** rejoignent ce network ; **db** et **worker** restent sur un réseau interne, sans port publié.
+
+| Service | Domaine | Exposé |
+|---------|---------|--------|
+| Frontend (SSR) | `durus.example.com` | Oui (Traefik) |
+| API Django | `api.durus.example.com` | Oui (Traefik) |
+| PostgreSQL | — | Non |
+| Worker Telegram | — | Non |
+
+### Prérequis serveur
+
+- Docker + Docker Compose
+- Traefik déjà configuré avec le network `proxy` (`docker network create proxy` si besoin)
+- DNS : `durus.example.com` et `api.durus.example.com` → IP du serveur
+- Aligner `TRAEFIK_ENTRYPOINT` et `TRAEFIK_CERT_RESOLVER` sur votre config Traefik
+
+### 1. Configuration
+
+```bash
+git clone <repo> && cd telegram-sync
+cp .env.example .env
+```
+
+Renseigner au minimum dans `.env` :
+
+```bash
+DJANGO_DEBUG=false
+DJANGO_SECRET_KEY=<secret-long-et-aleatoire>
+DJANGO_ALLOWED_HOSTS=api.durus.example.com
+CORS_ALLOWED_ORIGINS=https://durus.example.com
+CSRF_TRUSTED_ORIGINS=https://api.durus.example.com
+POSTGRES_PASSWORD=<mot-de-passe-fort>
+VITE_API_BASE_URL=https://api.durus.example.com
+FRONTEND_DOMAIN=durus.example.com
+API_DOMAIN=api.durus.example.com
+# + TELEGRAM_* et R2_* comme en dev
+```
+
+`VITE_API_BASE_URL` est **baké au build** du frontend : tout changement de domaine API impose un rebuild.
+
+### 2. Lancer la stack
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Les migrations Django s'exécutent au démarrage du backend. Vérifier :
+
+```bash
+curl https://api.durus.example.com/api/health/
+# {"status":"ok"}
+```
+
+### 3. Authentification Telegram (une fois)
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend python manage.py telegram_login
+```
+
+La session est persistée dans le volume `telegram_sessions` (à sauvegarder).
+
+### 4. Admin et sync initiale
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend python manage.py createsuperuser
+docker compose -f docker-compose.prod.yml exec backend python manage.py sync_history --limit 100
+```
+
+Répéter `sync_history` par lots jusqu'à couvrir l'historique souhaité. Le worker télécharge ensuite les médias vers R2 en continu.
+
+### 5. Mises à jour
+
+```bash
+git pull
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### Sauvegardes
+
+États à préserver :
+
+- Volume `postgres_data` (base de données)
+- Volume `telegram_sessions` (session Telethon)
+- Les fichiers audio sont sur R2, pas sur le serveur
+
 ## Feuille de route
 
 1. **Étape 1 (actuelle)** — Monorepo, Django/DRF, Postgres, Docker, squelette TanStack Start
