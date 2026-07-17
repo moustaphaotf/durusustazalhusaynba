@@ -116,10 +116,10 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
-# Telegram (used from étape 3+)
-TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID", "")
+# Telegram
+TELEGRAM_API_ID = int(os.environ["TELEGRAM_API_ID"]) if os.environ.get("TELEGRAM_API_ID") else None
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "-1001087177387")
+TELEGRAM_CHANNEL_ID = int(os.environ.get("TELEGRAM_CHANNEL_ID", "-1001087177387"))
 TELEGRAM_SESSION_PATH = os.environ.get(
     "TELEGRAM_SESSION_PATH",
     str(BASE_DIR / "sessions" / "durus"),

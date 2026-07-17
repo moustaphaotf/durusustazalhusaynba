@@ -84,6 +84,25 @@ npm install
 npm run dev
 ```
 
+## Connexion Telegram
+
+Les identifiants `TELEGRAM_API_ID` et `TELEGRAM_API_HASH` doivent être définis
+dans le fichier `.env`. La première authentification est interactive :
+
+```bash
+docker compose exec backend python manage.py telegram_login
+```
+
+Telegram demande le numéro de téléphone, le code reçu, puis éventuellement le
+mot de passe de vérification en deux étapes. La session est enregistrée dans
+`backend/sessions/` et n'est jamais versionnée.
+
+Pour contrôler ensuite la session et l'accès au canal :
+
+```bash
+docker compose exec backend python manage.py telegram_status
+```
+
 ## Feuille de route
 
 1. **Étape 1 (actuelle)** — Monorepo, Django/DRF, Postgres, Docker, squelette TanStack Start
