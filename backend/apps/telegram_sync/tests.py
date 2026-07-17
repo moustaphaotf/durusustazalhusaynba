@@ -339,19 +339,19 @@ class DownloadClaimTests(TestCase):
             download_status=Teaching.DownloadStatus.PENDING,
         )
 
-    def test_claim_moves_oldest_first_to_processing(self):
+    def test_claim_moves_newest_first_to_processing(self):
         older = self._make_pending(10, datetime(2024, 1, 1, tzinfo=timezone.utc))
         newer = self._make_pending(20, datetime(2024, 6, 1, tzinfo=timezone.utc))
 
         claimed = claim_pending_teachings(1)
 
         self.assertEqual(len(claimed), 1)
-        self.assertEqual(claimed[0].pk, older.pk)
+        self.assertEqual(claimed[0].pk, newer.pk)
 
         older.refresh_from_db()
         newer.refresh_from_db()
-        self.assertEqual(older.download_status, Teaching.DownloadStatus.PROCESSING)
-        self.assertEqual(newer.download_status, Teaching.DownloadStatus.PENDING)
+        self.assertEqual(newer.download_status, Teaching.DownloadStatus.PROCESSING)
+        self.assertEqual(older.download_status, Teaching.DownloadStatus.PENDING)
 
     def test_mark_ready_and_failed(self):
         teaching = self._make_pending(30, datetime(2024, 1, 1, tzinfo=timezone.utc))
