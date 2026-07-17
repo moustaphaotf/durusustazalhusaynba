@@ -1,7 +1,11 @@
-from rest_framework import mixins, viewsets
+from django.conf import settings
+from rest_framework import mixins, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 from apps.teachings.models import Teaching
 from apps.teachings.serializers import TeachingDetailSerializer, TeachingListSerializer
+from apps.telegram_sync import storage
 
 
 class TeachingViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
@@ -23,3 +27,23 @@ class TeachingViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
             queryset = queryset.filter(media_type=media_type)
 
         return queryset
+
+    @action(detail=True, methods=["get"])
+    def media(self, request, pk=None):
+        teaching = self.get_object()
+
+        if (
+            teaching.download_status != Teaching.DownloadStatus.READY
+            or not teaching.storage_key
+        ):
+            return Response(
+                {
+                    "detail": "Media is not available yet.",
+                    "download_status": teaching.download_status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        ttl = settings.R2_PRESIGNED_URL_TTL
+        url = storage.generate_presigned_url(teaching.storage_key, expires_in=ttl)
+        return Response({"url": url, "expires_in": ttl})

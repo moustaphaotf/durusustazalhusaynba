@@ -19,6 +19,11 @@ from apps.telegram_sync.messages import (
     message_to_teaching_payload,
     parse_caption_titles,
 )
+from apps.telegram_sync.downloader import (
+    claim_pending_teachings,
+    mark_failed,
+    mark_ready,
+)
 from apps.telegram_sync.models import ChannelSyncState
 from apps.telegram_sync.sync import (
     advance_sync_state,
@@ -294,7 +299,70 @@ class UpsertTeachingTests(TestCase):
         self.assertEqual(Teaching.objects.count(), 1)
         self.assertTrue(first.title_ar)
         self.assertTrue(first.title_fr)
+        self.assertEqual(first.download_status, Teaching.DownloadStatus.PENDING)
         self.assertEqual(
             first.telegram_message_url,
             "https://t.me/durusustazalhusaynba/42",
         )
+
+    def test_reupsert_preserves_download_progress(self):
+        document = SimpleNamespace(
+            id=1,
+            size=100,
+            mime_type="audio/mpeg",
+            attributes=[DocumentAttributeFilename(file_name="a.mp3")],
+        )
+        message = _message(audio=document, document=document, message=SAMPLE_CAPTION)
+        payload = message_to_teaching_payload(message, -1001)
+        assert payload is not None
+
+        teaching, _ = upsert_teaching(payload)
+        teaching.download_status = Teaching.DownloadStatus.READY
+        teaching.storage_key = "teachings/-1001/42.mp3"
+        teaching.save(update_fields=["download_status", "storage_key"])
+
+        again, created = upsert_teaching(payload)
+
+        self.assertFalse(created)
+        self.assertEqual(again.download_status, Teaching.DownloadStatus.READY)
+        self.assertEqual(again.storage_key, "teachings/-1001/42.mp3")
+
+
+class DownloadClaimTests(TestCase):
+    def _make_pending(self, message_id, published):
+        return Teaching.objects.create(
+            telegram_channel_id=-1001,
+            telegram_message_id=message_id,
+            media_type=Teaching.MediaType.AUDIO,
+            file_name=f"{message_id}.mp3",
+            published_at=published,
+            download_status=Teaching.DownloadStatus.PENDING,
+        )
+
+    def test_claim_moves_oldest_first_to_processing(self):
+        older = self._make_pending(10, datetime(2024, 1, 1, tzinfo=timezone.utc))
+        newer = self._make_pending(20, datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        claimed = claim_pending_teachings(1)
+
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].pk, older.pk)
+
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        self.assertEqual(older.download_status, Teaching.DownloadStatus.PROCESSING)
+        self.assertEqual(newer.download_status, Teaching.DownloadStatus.PENDING)
+
+    def test_mark_ready_and_failed(self):
+        teaching = self._make_pending(30, datetime(2024, 1, 1, tzinfo=timezone.utc))
+
+        mark_ready(teaching, "teachings/-1001/30.mp3")
+        teaching.refresh_from_db()
+        self.assertEqual(teaching.download_status, Teaching.DownloadStatus.READY)
+        self.assertEqual(teaching.storage_key, "teachings/-1001/30.mp3")
+        self.assertIsNotNone(teaching.downloaded_at)
+
+        mark_failed(teaching, "boom")
+        teaching.refresh_from_db()
+        self.assertEqual(teaching.download_status, Teaching.DownloadStatus.FAILED)
+        self.assertEqual(teaching.download_error, "boom")

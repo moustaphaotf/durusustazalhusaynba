@@ -105,9 +105,11 @@ docker compose exec backend python manage.py telegram_status
 
 ## Synchronisation historique
 
-Après authentification, importer les messages audio du canal **par lots**
-(du plus récent vers le plus ancien). Un curseur `ChannelSyncState` mémorise
-jusqu'où l'historique a été parcouru ; le prochain run reprend automatiquement.
+Après authentification, importer les **métadonnées** des messages audio du canal
+**par lots** (du plus récent vers le plus ancien). Un curseur `ChannelSyncState`
+mémorise jusqu'où l'historique a été parcouru ; le prochain run reprend
+automatiquement. Chaque nouvel enseignement est créé en statut `pending` : les
+fichiers ne sont pas téléchargés ici, mais par le worker (voir plus bas).
 
 ```bash
 # Test sans écriture en base (ne déplace pas le curseur)
@@ -119,16 +121,40 @@ docker compose exec backend python manage.py sync_history --limit 100
 # Lot suivant (reprend après le curseur)
 docker compose exec backend python manage.py sync_history --limit 100
 
-# Sync + téléchargement (ignore les fichiers déjà présents en local)
-docker compose exec backend python manage.py sync_history --limit 20 --download
-
 # Recommencer l'historique depuis les messages les plus récents
 docker compose exec backend python manage.py sync_history --limit 100 --reset
 ```
 
 Sans `--limit`, le lot parcourt tout ce qui reste jusqu'au début du canal.
-Les fichiers téléchargés sont stockés dans `backend/media/teachings/`.
 Chaque enseignement stocke aussi le permalink Telegram (`telegram_message_url`).
+
+## Stockage média (Cloudflare R2) et worker
+
+Les fichiers audio sont stockés sur un **bucket R2 privé**. Un worker
+(`download_pending_media`) traite les enseignements `pending` par petits lots
+(1–2 fichiers) à intervalle régulier (10–15 min par défaut) afin de rester léger
+en mémoire et respectueux des limites Telegram.
+
+Configurer les variables `R2_*` dans `.env` (voir `.env.example`), puis :
+
+```bash
+# Le worker tourne en continu via Docker Compose (service `worker`)
+docker compose up -d worker
+
+# Traiter un seul lot manuellement (utile pour tester)
+docker compose exec backend python manage.py download_pending_media --once --batch-size 2
+```
+
+Flux : `download_media` (Telethon) → fichier temporaire → upload R2 →
+`storage_key` + statut `ready`. En cas d'échec, l'enseignement passe en `failed`
+avec `download_error` (réactivable via l'action admin « Requeue »).
+
+Le média se récupère via une **URL signée** temporaire :
+
+```
+GET /api/teachings/{id}/media/
+# { "url": "https://...r2...signed", "expires_in": 3600 }
+```
 
 ## Feuille de route
 

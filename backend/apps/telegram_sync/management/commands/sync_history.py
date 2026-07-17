@@ -21,11 +21,6 @@ class Command(BaseCommand):
             help="Maximum number of channel messages to scan in this run.",
         )
         parser.add_argument(
-            "--download",
-            action="store_true",
-            help="Download matched audio files into MEDIA_ROOT/teachings/.",
-        )
-        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Scan and report matches without writing to the database.",
@@ -45,7 +40,6 @@ class Command(BaseCommand):
             stats = asyncio.run(
                 sync_channel_history(
                     limit=limit,
-                    download=options["download"],
                     dry_run=options["dry_run"],
                     reset=options["reset"],
                 )
@@ -57,9 +51,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"History {mode} completed."))
         self.stdout.write(f"Scanned: {stats.scanned}")
         self.stdout.write(f"Audio matched: {stats.matched}")
-        self.stdout.write(f"Created: {stats.created}")
+        self.stdout.write(f"Created (pending download): {stats.created}")
         self.stdout.write(f"Updated: {stats.updated}")
-        self.stdout.write(f"Downloaded: {stats.downloaded}")
         self.stdout.write(f"Skipped (non-audio): {stats.skipped}")
         self.stdout.write(f"Resume offset_id: {stats.offset_id}")
         self.stdout.write(f"Cursor oldest: {stats.oldest_synced_message_id}")

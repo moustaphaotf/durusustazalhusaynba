@@ -19,6 +19,7 @@ class TeachingListSerializer(serializers.ModelSerializer):
             "file_size",
             "published_at",
             "telegram_message_url",
+            "download_status",
             "category",
         )
 
@@ -40,7 +41,8 @@ class TeachingDetailSerializer(serializers.ModelSerializer):
             "telegram_file_id",
             "file_name",
             "file_size",
-            "local_path",
+            "download_status",
+            "downloaded_at",
             "published_at",
             "category",
             "created_at",

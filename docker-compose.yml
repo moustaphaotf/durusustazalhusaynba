@@ -35,6 +35,24 @@ services:
       sh -c "python manage.py migrate --noinput &&
              python manage.py runserver 0.0.0.0:8000"
 
+  worker:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py download_pending_media
+             --batch-size ${WORKER_BATCH_SIZE:-2}
+             --interval ${WORKER_INTERVAL_SECONDS:-900}"
+
   frontend:
     build:
       context: ./frontend

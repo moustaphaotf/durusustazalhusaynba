@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from asgiref.sync import sync_to_async
-from django.conf import settings
 from django.utils import timezone
-from telethon.tl.custom.message import Message
 
 from apps.teachings.models import Teaching
 from apps.telegram_sync.client import create_telegram_client
@@ -21,7 +18,6 @@ class SyncStats:
     matched: int = 0
     created: int = 0
     updated: int = 0
-    downloaded: int = 0
     skipped: int = 0
     offset_id: int | None = None
     oldest_synced_message_id: int | None = None
@@ -30,28 +26,31 @@ class SyncStats:
 
 
 def upsert_teaching(payload: TeachingPayload) -> tuple[Teaching, bool]:
+    """Create or update a Teaching without clobbering download progress.
+
+    New records start as PENDING so the media worker can pick them up.
+    Existing records keep their current download_status / storage_key.
+    """
+    defaults = {
+        "telegram_message_url": payload.telegram_message_url,
+        "title_ar": payload.title_ar,
+        "title_fr": payload.title_fr,
+        "description": payload.description,
+        "media_type": payload.media_type,
+        "telegram_file_id": payload.telegram_file_id,
+        "file_name": payload.file_name,
+        "file_size": payload.file_size,
+        "published_at": payload.published_at,
+    }
     teaching, created = Teaching.objects.update_or_create(
         telegram_channel_id=payload.telegram_channel_id,
         telegram_message_id=payload.telegram_message_id,
-        defaults={
-            "telegram_message_url": payload.telegram_message_url,
-            "title_ar": payload.title_ar,
-            "title_fr": payload.title_fr,
-            "description": payload.description,
-            "media_type": payload.media_type,
-            "telegram_file_id": payload.telegram_file_id,
-            "file_name": payload.file_name,
-            "file_size": payload.file_size,
-            "published_at": payload.published_at,
-        },
+        defaults=defaults,
     )
+    if created:
+        teaching.download_status = Teaching.DownloadStatus.PENDING
+        teaching.save(update_fields=["download_status"])
     return teaching, created
-
-
-def teaching_media_relative_path(payload: TeachingPayload) -> str:
-    extension = Path(payload.file_name).suffix if payload.file_name else ".ogg"
-    safe_name = f"{payload.telegram_message_id}{extension}"
-    return str(Path("teachings") / safe_name)
 
 
 def get_or_create_sync_state(channel_id: int) -> ChannelSyncState:
@@ -125,24 +124,9 @@ def advance_sync_state(
     return state
 
 
-async def _download_teaching_media(
-    message: Message,
-    payload: TeachingPayload,
-) -> str | None:
-    relative_path = teaching_media_relative_path(payload)
-    absolute_path = Path(settings.MEDIA_ROOT) / relative_path
-    absolute_path.parent.mkdir(parents=True, exist_ok=True)
-
-    downloaded = await message.download_media(file=str(absolute_path))
-    if not downloaded:
-        return None
-    return relative_path
-
-
 async def sync_channel_history(
     *,
     limit: int | None = None,
-    download: bool = False,
     dry_run: bool = False,
     reset: bool = False,
     config: TelegramConfig | None = None,
@@ -154,7 +138,6 @@ async def sync_channel_history(
     matched = 0
     created = 0
     updated = 0
-    downloaded = 0
     skipped = 0
     scanned_ids: list[int] = []
 
@@ -196,20 +179,11 @@ async def sync_channel_history(
             if dry_run:
                 continue
 
-            teaching, was_created = await sync_to_async(upsert_teaching)(payload)
+            _, was_created = await sync_to_async(upsert_teaching)(payload)
             if was_created:
                 created += 1
             else:
                 updated += 1
-
-            if download and message.media and not teaching.local_path:
-                relative_path = await _download_teaching_media(message, payload)
-                if relative_path:
-                    teaching.local_path = relative_path
-                    await sync_to_async(teaching.save)(
-                        update_fields=["local_path", "updated_at"]
-                    )
-                    downloaded += 1
     finally:
         await client.disconnect()
 
@@ -224,7 +198,6 @@ async def sync_channel_history(
         matched=matched,
         created=created,
         updated=updated,
-        downloaded=downloaded,
         skipped=skipped,
         offset_id=offset_id,
         oldest_synced_message_id=state.oldest_synced_message_id,

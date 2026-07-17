@@ -7,6 +7,13 @@ class Teaching(models.Model):
         VOICE = "voice", "Voice"
         DOCUMENT = "document", "Document"
 
+    class DownloadStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        READY = "ready", "Ready"
+        FAILED = "failed", "Failed"
+        SKIPPED = "skipped", "Skipped"
+
     telegram_message_id = models.BigIntegerField()
     telegram_channel_id = models.BigIntegerField()
     telegram_message_url = models.URLField(max_length=500, blank=True)
@@ -22,6 +29,14 @@ class Teaching(models.Model):
     file_name = models.CharField(max_length=500, blank=True)
     file_size = models.BigIntegerField(null=True, blank=True)
     local_path = models.CharField(max_length=500, blank=True)
+    storage_key = models.CharField(max_length=500, blank=True)
+    download_status = models.CharField(
+        max_length=20,
+        choices=DownloadStatus.choices,
+        default=DownloadStatus.PENDING,
+    )
+    download_error = models.TextField(blank=True)
+    downloaded_at = models.DateTimeField(null=True, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
     category = models.ForeignKey(
         "categories.Category",
@@ -44,6 +59,7 @@ class Teaching(models.Model):
         indexes = [
             models.Index(fields=["-published_at"]),
             models.Index(fields=["media_type"]),
+            models.Index(fields=["download_status"]),
         ]
 
     def __str__(self) -> str:
