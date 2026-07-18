@@ -37,7 +37,7 @@ services:
         condition: service_healthy
     command: >
       sh -c "python manage.py migrate --noinput &&
-             gunicorn config.wsgi:application -b 0.0.0.0:8000 --workers 3"
+             gunicorn config.wsgi:application -b 0.0.0.0:8000 --workers 3 --access-logfile - --error-logfile -"
     labels:
       - traefik.enable=true
       - traefik.docker.network=proxy
