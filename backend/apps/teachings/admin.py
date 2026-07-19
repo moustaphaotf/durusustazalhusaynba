@@ -1,5 +1,7 @@
+from django.conf import settings
 from django.contrib import admin
 from django.utils import timezone
+from django.utils.html import format_html
 
 from apps.teachings.models import Teaching
 from apps.telegram_sync import storage
@@ -13,6 +15,7 @@ class TeachingAdmin(admin.ModelAdmin):
         "title_fr",
         "media_type",
         "download_status",
+        "listen_link",
         "category",
         "published_at",
         "telegram_message_id",
@@ -28,6 +31,7 @@ class TeachingAdmin(admin.ModelAdmin):
     )
     raw_id_fields = ("category",)
     readonly_fields = (
+        "listen_link",
         "created_at",
         "updated_at",
         "downloaded_at",
@@ -38,6 +42,24 @@ class TeachingAdmin(admin.ModelAdmin):
     )
     date_hierarchy = "published_at"
     actions = ("download_now", "reconcile_with_r2", "requeue_download")
+
+    @admin.display(description="Écouter")
+    def listen_link(self, obj: Teaching):
+        """Open a short-lived R2 URL in a new tab when media is ready."""
+        if (
+            obj.download_status != Teaching.DownloadStatus.READY
+            or not obj.storage_key
+        ):
+            return "—"
+
+        url = storage.generate_presigned_url(
+            obj.storage_key,
+            expires_in=settings.R2_PRESIGNED_URL_TTL,
+        )
+        return format_html(
+            '<a href="{}" target="_blank" rel="noopener noreferrer">Écouter</a>',
+            url,
+        )
 
     @admin.action(description="Télécharger maintenant (prioritaire)")
     def download_now(self, request, queryset):

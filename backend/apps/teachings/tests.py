@@ -199,3 +199,35 @@ class ReconcileWithR2ActionTests(TestCase):
         self.assertFalse(failed.force_redownload)
         self.assertIsNotNone(failed.download_requested_at)
         message_user.assert_called_once()
+
+
+class ListenLinkAdminTests(TestCase):
+    def setUp(self):
+        self.model_admin = TeachingAdmin(Teaching, admin.site)
+
+    def test_listen_link_absent_when_not_ready(self):
+        teaching = Teaching.objects.create(
+            telegram_channel_id=-1001,
+            telegram_message_id=60,
+            media_type=Teaching.MediaType.AUDIO,
+            download_status=Teaching.DownloadStatus.PENDING,
+        )
+        self.assertEqual(self.model_admin.listen_link(teaching), "—")
+
+    @patch("apps.teachings.admin.storage.generate_presigned_url")
+    def test_listen_link_opens_presigned_url(self, generate_url):
+        generate_url.return_value = "https://r2.example/listen.mp3?sig=1"
+        teaching = Teaching.objects.create(
+            telegram_channel_id=-1001,
+            telegram_message_id=61,
+            media_type=Teaching.MediaType.AUDIO,
+            download_status=Teaching.DownloadStatus.READY,
+            storage_key="teachings/-1001/61.mp3",
+        )
+
+        html = self.model_admin.listen_link(teaching)
+
+        self.assertIn('href="https://r2.example/listen.mp3?sig=1"', html)
+        self.assertIn('target="_blank"', html)
+        self.assertIn("Écouter", html)
+        generate_url.assert_called_once()
