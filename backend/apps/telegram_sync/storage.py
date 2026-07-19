@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
@@ -98,6 +99,56 @@ def upload_file(
             Key=key,
         )
     return key
+
+
+def object_exists(
+    key: str,
+    *,
+    config: R2Config | None = None,
+) -> bool:
+    """Check whether an exact object key exists without downloading it."""
+    r2_config = config or get_r2_config()
+    client = get_r2_client(r2_config)
+    try:
+        client.head_object(Bucket=r2_config.bucket_name, Key=key)
+    except ClientError as exc:
+        status_code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        error_code = str(exc.response.get("Error", {}).get("Code", ""))
+        if status_code == 404 or error_code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
+    return True
+
+
+def find_existing_teaching_key(
+    *,
+    channel_id: int,
+    message_id: int,
+    known_key: str = "",
+    config: R2Config | None = None,
+) -> str | None:
+    """Return the existing R2 key for a teaching, if any.
+
+    The exact database key is checked first. If it is missing or stale,
+    search the deterministic ``channel/message.`` prefix to recover objects
+    whose extension is only known from Telegram metadata.
+    """
+    r2_config = config or get_r2_config()
+    client = get_r2_client(r2_config)
+
+    if known_key and object_exists(known_key, config=r2_config):
+        return known_key
+
+    prefix = f"teachings/{channel_id}/{message_id}."
+    response = client.list_objects_v2(
+        Bucket=r2_config.bucket_name,
+        Prefix=prefix,
+        MaxKeys=1,
+    )
+    objects = response.get("Contents") or []
+    if not objects:
+        return None
+    return objects[0]["Key"]
 
 
 def generate_presigned_url(

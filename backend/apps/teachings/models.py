@@ -36,6 +36,10 @@ class Teaching(models.Model):
         default=DownloadStatus.PENDING,
     )
     download_error = models.TextField(blank=True)
+    # Set by the admin "download now" action: prioritized by the worker, cleared once processed.
+    download_requested_at = models.DateTimeField(null=True, blank=True)
+    # When True, the worker skips the R2 existence check and re-uploads from Telegram.
+    force_redownload = models.BooleanField(default=False)
     downloaded_at = models.DateTimeField(null=True, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
     category = models.ForeignKey(

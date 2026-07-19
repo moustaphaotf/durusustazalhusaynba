@@ -53,7 +53,12 @@ class Command(BaseCommand):
 
         while True:
             try:
-                stats = asyncio.run(download_pending_batch(batch_size=batch_size))
+                stats = asyncio.run(
+                    download_pending_batch(
+                        batch_size=batch_size,
+                        progress=self.stdout.write,
+                    )
+                )
             except ImproperlyConfigured as exc:
                 raise CommandError(f"Configuration error: {exc}") from exc
             except (OSError, RPCError, RuntimeError, ValueError) as exc:
@@ -66,7 +71,8 @@ class Command(BaseCommand):
                 else:
                     self.stdout.write(
                         f"Batch done: claimed={stats.claimed} "
-                        f"uploaded={stats.uploaded} failed={stats.failed}"
+                        f"uploaded={stats.uploaded} reused={stats.reused} "
+                        f"failed={stats.failed}"
                     )
 
             if run_once:

@@ -9,7 +9,9 @@ from apps.telegram_sync import storage
 
 
 class TeachingViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    queryset = Teaching.objects.select_related("category").all()
+    queryset = Teaching.objects.select_related("category").filter(
+        download_status=Teaching.DownloadStatus.READY,
+    )
 
     def get_serializer_class(self):
         if self.action == "retrieve":

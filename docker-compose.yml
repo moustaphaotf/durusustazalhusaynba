@@ -49,7 +49,7 @@ services:
       db:
         condition: service_healthy
     command: >
-      sh -c "python manage.py download_pending_media
+      sh -c "python manage.py telegram_worker
              --batch-size ${WORKER_BATCH_SIZE:-2}
              --interval ${WORKER_INTERVAL_SECONDS:-900}"
 

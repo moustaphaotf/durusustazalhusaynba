@@ -128,17 +128,39 @@ docker compose exec backend python manage.py sync_history --limit 100 --reset
 Sans `--limit`, le lot parcourt tout ce qui reste jusqu'au début du canal.
 Chaque enseignement stocke aussi le permalink Telegram (`telegram_message_url`).
 
-## Stockage média (Cloudflare R2) et worker
+Si le worker était arrêté pendant la publication de nouveaux messages, lancer
+manuellement un rattrapage récent. Il récupère uniquement les messages situés
+après `newest_synced_message_id` et ne modifie pas la progression historique
+`oldest_synced_message_id`. Arrêter le worker évite que deux processus utilisent
+la même session Telethon :
+
+```bash
+docker compose stop worker
+docker compose exec backend python manage.py sync_history --catch-up
+docker compose start worker
+```
+
+`--limit` et `--dry-run` sont aussi compatibles avec `--catch-up`. Aucun
+rattrapage n'est déclenché automatiquement par le worker.
+
+## Écoute Telegram, stockage média (Cloudflare R2) et worker
 
 Les fichiers audio sont stockés sur un **bucket R2 privé**. Un worker
-(`download_pending_media`) traite les enseignements `pending` par petits lots
-(1–2 fichiers) à intervalle régulier (10–15 min par défaut) afin de rester léger
-en mémoire et respectueux des limites Telegram.
+unique (`telegram_worker`) reste connecté à Telegram pour :
+
+- créer automatiquement un enseignement `pending` à chaque nouveau message audio ;
+- traiter les enseignements `pending` par petits lots (1–2 fichiers) à intervalle
+  régulier (10–15 min par défaut) ;
+- traiter en priorité, sous environ 10 secondes, les téléchargements demandés
+  depuis l'admin Django.
+
+Le listener et les téléchargements partagent un seul client Telethon afin de ne
+pas ouvrir la même session Telegram SQLite depuis plusieurs processus.
 
 Configurer les variables `R2_*` dans `.env` (voir `.env.example`), puis :
 
 ```bash
-# Le worker tourne en continu via Docker Compose (service `worker`)
+# Le listener + worker tournent en continu via Docker Compose (service `worker`)
 docker compose up -d worker
 
 # Traiter un seul lot manuellement (utile pour tester)
@@ -148,6 +170,30 @@ docker compose exec backend python manage.py download_pending_media --once --bat
 Flux : `download_media` (Telethon) → fichier temporaire → upload R2 →
 `storage_key` + statut `ready`. En cas d'échec, l'enseignement passe en `failed`
 avec `download_error` (réactivable via l'action admin « Requeue »).
+
+Dans l'admin des enseignements, l'action **« Télécharger maintenant
+(prioritaire) »** ne télécharge rien pendant la requête HTTP : elle place les
+éléments sélectionnés dans la file prioritaire. Le service `worker` les récupère
+ensuite en arrière-plan — et uniquement ceux-là (pas d'autres `pending` du
+backlog) tant que le lot régulier n'est pas dû.
+
+L'action **« Réconcilier avec R2 »** vérifie les objets sans les télécharger :
+un objet retrouvé restaure `storage_key` et le statut `ready`; un objet absent
+repasse en `pending` sans priorité. Les éléments `processing` sont ignorés.
+L'action **« Remettre en file »** force un re-téléchargement Telegram → R2
+(`force_redownload=True`), même si l'objet existe déjà.
+
+Le worker fait aussi cette vérification automatiquement avant chaque
+téléchargement Telegram, sauf quand `force_redownload` est actif.
+
+Pour suivre chaque fichier :
+
+```bash
+docker compose logs -f worker
+# Download started: teaching=... telegram_message=... priority=True force_redownload=False
+# R2 object reused: teaching=... storage_key=...
+# Download completed: teaching=... storage_key=...
+```
 
 Le média se récupère via une **URL signée** temporaire :
 
@@ -249,7 +295,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 2. **Étape 2** — Modèles `Teaching` / `Category`, migrations, premiers endpoints
 3. **Étape 3** — Intégration Telethon
 4. **Étape 4** — Sync historique du canal
-5. **Étape 5** — Écoute des nouveaux messages
+5. **Étape 5 (terminée)** — Écoute des nouveaux messages + téléchargements prioritaires depuis l'admin
 6. **Étape 6** — Interface de consultation
 
 ## Notes

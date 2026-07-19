@@ -20,6 +20,7 @@ class SyncStats:
     updated: int = 0
     skipped: int = 0
     offset_id: int | None = None
+    min_id: int | None = None
     oldest_synced_message_id: int | None = None
     newest_synced_message_id: int | None = None
     history_complete: bool = False
@@ -58,9 +59,71 @@ def get_or_create_sync_state(channel_id: int) -> ChannelSyncState:
     return state
 
 
+def record_live_message(channel_id: int, message_id: int) -> ChannelSyncState:
+    """Advance the newest-message cursor when the live listener sees a message.
+
+    Keeps `sync_history` coherent: messages already captured live won't
+    look like a gap above the recorded newest id.
+    """
+    state = get_or_create_sync_state(channel_id)
+    if (
+        state.newest_synced_message_id is None
+        or message_id > state.newest_synced_message_id
+    ):
+        state.newest_synced_message_id = message_id
+    state.last_synced_at = timezone.now()
+    state.save(update_fields=["newest_synced_message_id", "last_synced_at"])
+    return state
+
+
+def advance_recent_sync_state(
+    state: ChannelSyncState,
+    *,
+    scanned_ids: list[int],
+) -> ChannelSyncState:
+    """Advance only the recent-message cursor after a manual catch-up."""
+    if scanned_ids:
+        batch_max = max(scanned_ids)
+        if (
+            state.newest_synced_message_id is None
+            or batch_max > state.newest_synced_message_id
+        ):
+            state.newest_synced_message_id = batch_max
+    state.last_synced_at = timezone.now()
+    state.save(update_fields=["newest_synced_message_id", "last_synced_at"])
+    return state
+
+
 def history_offset_id(state: ChannelSyncState) -> int | None:
     """Telethon offset_id to continue older history, or None to start from newest."""
     return state.oldest_synced_message_id
+
+
+def catch_up_min_id(state: ChannelSyncState) -> int:
+    """Message id after which a manual catch-up should resume."""
+    if state.newest_synced_message_id is None:
+        raise ValueError(
+            "No newest message cursor exists yet. "
+            "Run sync_history normally before using --catch-up."
+        )
+    return state.newest_synced_message_id
+
+
+def history_iter_kwargs(
+    *,
+    limit: int | None,
+    catch_up: bool,
+    min_id: int | None,
+    offset_id: int | None,
+) -> dict:
+    """Build Telethon iter_messages kwargs for history or catch-up."""
+    kwargs: dict = {"limit": limit}
+    if catch_up:
+        # Oldest → newest keeps the cursor resumable when --limit is used.
+        kwargs.update({"min_id": min_id, "reverse": True})
+    elif offset_id is not None:
+        kwargs["offset_id"] = offset_id
+    return kwargs
 
 
 def reset_sync_state(state: ChannelSyncState) -> ChannelSyncState:
@@ -129,8 +192,12 @@ async def sync_channel_history(
     limit: int | None = None,
     dry_run: bool = False,
     reset: bool = False,
+    catch_up: bool = False,
     config: TelegramConfig | None = None,
 ) -> SyncStats:
+    if reset and catch_up:
+        raise ValueError("--reset and --catch-up cannot be used together.")
+
     telegram_config = config or get_telegram_config()
     client = create_telegram_client(telegram_config)
 
@@ -142,7 +209,11 @@ async def sync_channel_history(
     scanned_ids: list[int] = []
 
     state = await sync_to_async(get_or_create_sync_state)(telegram_config.channel_id)
-    if reset and not dry_run:
+    min_id = None
+    if catch_up:
+        min_id = catch_up_min_id(state)
+        offset_id = None
+    elif reset and not dry_run:
         state = await sync_to_async(reset_sync_state)(state)
         offset_id = None
     else:
@@ -156,9 +227,12 @@ async def sync_channel_history(
                 "Run `python manage.py telegram_login` first."
             )
 
-        iter_kwargs: dict = {"limit": limit}
-        if offset_id is not None:
-            iter_kwargs["offset_id"] = offset_id
+        iter_kwargs = history_iter_kwargs(
+            limit=limit,
+            catch_up=catch_up,
+            min_id=min_id,
+            offset_id=offset_id,
+        )
 
         async for message in client.iter_messages(
             telegram_config.channel_id,
@@ -188,10 +262,16 @@ async def sync_channel_history(
         await client.disconnect()
 
     if not dry_run:
-        state = await sync_to_async(advance_sync_state)(
-            state,
-            scanned_ids=scanned_ids,
-        )
+        if catch_up:
+            state = await sync_to_async(advance_recent_sync_state)(
+                state,
+                scanned_ids=scanned_ids,
+            )
+        else:
+            state = await sync_to_async(advance_sync_state)(
+                state,
+                scanned_ids=scanned_ids,
+            )
 
     return SyncStats(
         scanned=scanned,
@@ -200,6 +280,7 @@ async def sync_channel_history(
         updated=updated,
         skipped=skipped,
         offset_id=offset_id,
+        min_id=min_id,
         oldest_synced_message_id=state.oldest_synced_message_id,
         newest_synced_message_id=state.newest_synced_message_id,
         history_complete=state.history_complete,

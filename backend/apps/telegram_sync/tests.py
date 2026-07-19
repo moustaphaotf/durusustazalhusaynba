@@ -1,13 +1,17 @@
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.teachings.models import Teaching
+from apps.telegram_sync import storage
 from apps.telegram_sync.client import create_telegram_client
 from apps.telegram_sync.config import (
     TelegramConfig,
@@ -21,14 +25,21 @@ from apps.telegram_sync.messages import (
 )
 from apps.telegram_sync.downloader import (
     claim_pending_teachings,
+    has_priority_pending,
     mark_failed,
     mark_ready,
+    try_reuse_existing_r2_object,
 )
 from apps.telegram_sync.models import ChannelSyncState
 from apps.telegram_sync.sync import (
+    SyncStats,
+    advance_recent_sync_state,
     advance_sync_state,
+    catch_up_min_id,
     get_or_create_sync_state,
+    history_iter_kwargs,
     history_offset_id,
+    record_live_message,
     reset_sync_state,
     upsert_teaching,
 )
@@ -124,6 +135,56 @@ class TelegramClientTests(SimpleTestCase):
             str(config.session_path),
             config.api_id,
             config.api_hash,
+        )
+
+
+class R2ReconciliationTests(SimpleTestCase):
+    def setUp(self):
+        self.config = storage.R2Config(
+            account_id="account",
+            access_key_id="key",
+            secret_access_key="secret",
+            bucket_name="bucket",
+            endpoint_url="https://example.invalid",
+            region="auto",
+        )
+
+    @patch("apps.telegram_sync.storage.get_r2_client")
+    def test_find_existing_key_uses_known_exact_key(self, get_client):
+        client = get_client.return_value
+
+        key = storage.find_existing_teaching_key(
+            channel_id=-1001,
+            message_id=42,
+            known_key="teachings/-1001/42.mp3",
+            config=self.config,
+        )
+
+        self.assertEqual(key, "teachings/-1001/42.mp3")
+        client.head_object.assert_called_once_with(
+            Bucket="bucket",
+            Key="teachings/-1001/42.mp3",
+        )
+        client.list_objects_v2.assert_not_called()
+
+    @patch("apps.telegram_sync.storage.get_r2_client")
+    def test_find_existing_key_discovers_object_by_prefix(self, get_client):
+        client = get_client.return_value
+        client.list_objects_v2.return_value = {
+            "Contents": [{"Key": "teachings/-1001/42.ogg"}],
+        }
+
+        key = storage.find_existing_teaching_key(
+            channel_id=-1001,
+            message_id=42,
+            config=self.config,
+        )
+
+        self.assertEqual(key, "teachings/-1001/42.ogg")
+        client.list_objects_v2.assert_called_once_with(
+            Bucket="bucket",
+            Prefix="teachings/-1001/42.",
+            MaxKeys=1,
         )
 
 
@@ -273,6 +334,92 @@ class SyncStateTests(TestCase):
         self.assertFalse(state.history_complete)
         self.assertEqual(ChannelSyncState.objects.count(), 1)
 
+    def test_record_live_message_advances_newest_cursor(self):
+        state = record_live_message(-1001, 500)
+        self.assertEqual(state.newest_synced_message_id, 500)
+        self.assertIsNotNone(state.last_synced_at)
+
+        state = record_live_message(-1001, 510)
+        self.assertEqual(state.newest_synced_message_id, 510)
+
+        # An older id (e.g. out-of-order delivery) never moves the cursor back.
+        state = record_live_message(-1001, 505)
+        self.assertEqual(state.newest_synced_message_id, 510)
+        self.assertEqual(ChannelSyncState.objects.count(), 1)
+
+    def test_recent_cursor_advances_without_changing_history_cursor(self):
+        state = get_or_create_sync_state(-1001)
+        state = advance_sync_state(state, scanned_ids=[100, 75, 50])
+
+        state = advance_recent_sync_state(state, scanned_ids=[101, 102])
+
+        self.assertEqual(state.newest_synced_message_id, 102)
+        self.assertEqual(state.oldest_synced_message_id, 50)
+        self.assertFalse(state.history_complete)
+
+
+class ManualCatchUpTests(TestCase):
+    def test_catch_up_requires_existing_newest_cursor(self):
+        state = get_or_create_sync_state(-1001)
+        with self.assertRaises(ValueError):
+            catch_up_min_id(state)
+
+        advance_sync_state(state, scanned_ids=[100, 75, 50])
+        state.refresh_from_db()
+        self.assertEqual(catch_up_min_id(state), 100)
+
+    def test_catch_up_iter_kwargs_use_min_id_ascending(self):
+        self.assertEqual(
+            history_iter_kwargs(
+                limit=2,
+                catch_up=True,
+                min_id=100,
+                offset_id=None,
+            ),
+            {"limit": 2, "min_id": 100, "reverse": True},
+        )
+        self.assertEqual(
+            history_iter_kwargs(
+                limit=2,
+                catch_up=False,
+                min_id=None,
+                offset_id=50,
+            ),
+            {"limit": 2, "offset_id": 50},
+        )
+
+    @patch("apps.telegram_sync.management.commands.sync_history.sync_channel_history")
+    def test_sync_history_command_catch_up_flag(self, sync_history):
+        async def fake_sync(**kwargs):
+            return SyncStats(
+                scanned=2,
+                matched=1,
+                created=1,
+                updated=0,
+                skipped=1,
+                min_id=100,
+                oldest_synced_message_id=50,
+                newest_synced_message_id=102,
+            )
+
+        sync_history.side_effect = fake_sync
+        out = StringIO()
+
+        call_command("sync_history", "--catch-up", "--limit", "2", stdout=out)
+
+        sync_history.assert_called_once_with(
+            limit=2,
+            dry_run=False,
+            reset=False,
+            catch_up=True,
+        )
+        self.assertIn("Catch-up sync completed.", out.getvalue())
+        self.assertIn("Catch-up after message ID: 100", out.getvalue())
+
+    def test_sync_history_rejects_reset_with_catch_up(self):
+        with self.assertRaises(CommandError):
+            call_command("sync_history", "--catch-up", "--reset")
+
 
 class UpsertTeachingTests(TestCase):
     def test_upsert_is_idempotent(self):
@@ -353,16 +500,97 @@ class DownloadClaimTests(TestCase):
         self.assertEqual(newer.download_status, Teaching.DownloadStatus.PROCESSING)
         self.assertEqual(older.download_status, Teaching.DownloadStatus.PENDING)
 
+    def test_admin_requested_downloads_claimed_before_newest(self):
+        older_requested = self._make_pending(
+            10, datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
+        older_requested.download_requested_at = datetime(
+            2024, 7, 1, tzinfo=timezone.utc
+        )
+        older_requested.save(update_fields=["download_requested_at"])
+        self._make_pending(20, datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        self.assertTrue(has_priority_pending())
+
+        claimed = claim_pending_teachings(1)
+
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].pk, older_requested.pk)
+
+    def test_priority_requests_claimed_oldest_request_first(self):
+        second_request = self._make_pending(
+            10, datetime(2024, 6, 1, tzinfo=timezone.utc)
+        )
+        second_request.download_requested_at = datetime(
+            2024, 7, 2, tzinfo=timezone.utc
+        )
+        second_request.save(update_fields=["download_requested_at"])
+
+        first_request = self._make_pending(
+            20, datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
+        first_request.download_requested_at = datetime(
+            2024, 7, 1, tzinfo=timezone.utc
+        )
+        first_request.save(update_fields=["download_requested_at"])
+
+        claimed = claim_pending_teachings(1)
+
+        self.assertEqual(claimed[0].pk, first_request.pk)
+
+    def test_priority_only_claim_excludes_backlog(self):
+        priority = self._make_pending(10, datetime(2024, 1, 1, tzinfo=timezone.utc))
+        priority.download_requested_at = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        priority.save(update_fields=["download_requested_at"])
+        backlog = self._make_pending(20, datetime(2024, 6, 1, tzinfo=timezone.utc))
+
+        claimed = claim_pending_teachings(2, priority_only=True)
+
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].pk, priority.pk)
+        backlog.refresh_from_db()
+        self.assertEqual(backlog.download_status, Teaching.DownloadStatus.PENDING)
+
     def test_mark_ready_and_failed(self):
         teaching = self._make_pending(30, datetime(2024, 1, 1, tzinfo=timezone.utc))
+        teaching.download_requested_at = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        teaching.force_redownload = True
+        teaching.save(update_fields=["download_requested_at", "force_redownload"])
 
         mark_ready(teaching, "teachings/-1001/30.mp3")
         teaching.refresh_from_db()
         self.assertEqual(teaching.download_status, Teaching.DownloadStatus.READY)
         self.assertEqual(teaching.storage_key, "teachings/-1001/30.mp3")
         self.assertIsNotNone(teaching.downloaded_at)
+        self.assertIsNone(teaching.download_requested_at)
+        self.assertFalse(teaching.force_redownload)
+
+        teaching.download_requested_at = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        teaching.save(update_fields=["download_requested_at"])
 
         mark_failed(teaching, "boom")
         teaching.refresh_from_db()
         self.assertEqual(teaching.download_status, Teaching.DownloadStatus.FAILED)
         self.assertEqual(teaching.download_error, "boom")
+        self.assertIsNone(teaching.download_requested_at)
+        self.assertFalse(has_priority_pending())
+
+    @patch("apps.telegram_sync.downloader.storage.find_existing_teaching_key")
+    def test_reuse_skips_r2_check_when_force_redownload(self, find_key):
+        teaching = self._make_pending(40, datetime(2024, 1, 1, tzinfo=timezone.utc))
+        teaching.force_redownload = True
+        teaching.save(update_fields=["force_redownload"])
+
+        self.assertIsNone(try_reuse_existing_r2_object(teaching))
+        find_key.assert_not_called()
+
+    @patch("apps.telegram_sync.downloader.storage.find_existing_teaching_key")
+    def test_reuse_returns_existing_key_when_not_forced(self, find_key):
+        teaching = self._make_pending(50, datetime(2024, 1, 1, tzinfo=timezone.utc))
+        find_key.return_value = "teachings/-1001/50.mp3"
+
+        self.assertEqual(
+            try_reuse_existing_r2_object(teaching),
+            "teachings/-1001/50.mp3",
+        )
+        find_key.assert_called_once()
