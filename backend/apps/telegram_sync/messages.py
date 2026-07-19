@@ -119,7 +119,7 @@ def parse_caption_titles(text: str) -> tuple[str, str]:
 
 def detect_media_type(message: Message) -> str | None:
     if message.voice:
-        return Teaching.MediaType.VOICE
+        return None
 
     if message.audio:
         return Teaching.MediaType.AUDIO
@@ -128,14 +128,16 @@ def detect_media_type(message: Message) -> str | None:
     if document is None:
         return None
 
+    for attribute in document.attributes:
+        if isinstance(attribute, DocumentAttributeAudio) and attribute.voice:
+            return None
+
     mime_type = (document.mime_type or "").lower()
     if mime_type.startswith("audio/"):
         return Teaching.MediaType.DOCUMENT
 
     for attribute in document.attributes:
         if isinstance(attribute, DocumentAttributeAudio):
-            if attribute.voice:
-                return Teaching.MediaType.VOICE
             return Teaching.MediaType.DOCUMENT
 
     return None

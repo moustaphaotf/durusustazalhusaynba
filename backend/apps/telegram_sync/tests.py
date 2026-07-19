@@ -294,7 +294,7 @@ class MessageMappingTests(SimpleTestCase):
         self.assertEqual(payload.title_ar, "Cours Aqida")
         self.assertEqual(payload.title_fr, "")
 
-    def test_maps_voice_notes(self):
+    def test_ignores_voice_notes(self):
         document = SimpleNamespace(
             id=111,
             size=512,
@@ -303,11 +303,20 @@ class MessageMappingTests(SimpleTestCase):
         )
         message = _message(voice=document, document=document, message="")
 
-        payload = message_to_teaching_payload(message, -1001)
+        self.assertIsNone(detect_media_type(message))
+        self.assertIsNone(message_to_teaching_payload(message, -1001))
 
-        self.assertIsNotNone(payload)
-        assert payload is not None
-        self.assertEqual(payload.media_type, Teaching.MediaType.VOICE)
+    def test_ignores_voice_document_without_voice_property(self):
+        document = SimpleNamespace(
+            id=112,
+            size=512,
+            mime_type="audio/ogg",
+            attributes=[DocumentAttributeAudio(duration=10, voice=True)],
+        )
+        message = _message(document=document, message="")
+
+        self.assertIsNone(detect_media_type(message))
+        self.assertIsNone(message_to_teaching_payload(message, -1001))
 
 
 class SyncStateTests(TestCase):

@@ -48,8 +48,6 @@ def _media_extension(teaching: Teaching, message) -> str:
     if guessed:
         return guessed
 
-    if teaching.media_type == Teaching.MediaType.VOICE:
-        return ".ogg"
     return ".mp3"
 
 
@@ -65,8 +63,6 @@ def _media_content_type(teaching: Teaching, message) -> str:
         if guessed:
             return guessed
 
-    if teaching.media_type == Teaching.MediaType.VOICE:
-        return "audio/ogg"
     return "audio/mpeg"
 
 

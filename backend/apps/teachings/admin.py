@@ -13,12 +13,10 @@ class TeachingAdmin(admin.ModelAdmin):
         "id",
         "title_ar",
         "title_fr",
-        "media_type",
         "download_status",
         "listen_link",
         "category",
         "published_at",
-        "telegram_message_id",
     )
     list_filter = ("media_type", "download_status", "category")
     search_fields = (

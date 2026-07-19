@@ -4,7 +4,6 @@ from django.db import models
 class Teaching(models.Model):
     class MediaType(models.TextChoices):
         AUDIO = "audio", "Audio"
-        VOICE = "voice", "Voice"
         DOCUMENT = "document", "Document"
 
     class DownloadStatus(models.TextChoices):
