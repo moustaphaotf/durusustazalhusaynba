@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     "apps.teachings",
     "apps.telegram_sync",
     "apps.categories",
+    "apps.monitoring",
 ]
 
 MIDDLEWARE = [
@@ -52,6 +53,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "apps.monitoring.middleware.DiscordExceptionMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -121,8 +123,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_RENDERER_CLASSES": [
-      "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.JSONRenderer",
     ],
+    "EXCEPTION_HANDLER": "apps.monitoring.exception_handler.discord_exception_handler",
 }
 
 CORS_ALLOWED_ORIGINS = [
@@ -164,3 +167,6 @@ R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "")
 R2_ENDPOINT = os.environ.get("R2_ENDPOINT", "")
 R2_REGION = os.environ.get("R2_REGION", "auto")
 R2_PRESIGNED_URL_TTL = int(os.environ.get("R2_PRESIGNED_URL_TTL", "3600"))
+
+# Discord error alerts (incoming webhook URL — server-side only)
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()

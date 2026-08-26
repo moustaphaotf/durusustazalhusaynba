@@ -1,4 +1,5 @@
 import { apiUrl } from '#/lib/config'
+import { reportCaughtError } from '#/lib/error-reporting'
 import type {
   Category,
   MediaConflictResponse,
@@ -36,11 +37,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await parseJson<unknown>(response)
-    throw new ApiError(
+    const apiError = new ApiError(
       `API ${response.status}: ${response.statusText}`,
       response.status,
       body,
     )
+    if (response.status >= 500) {
+      reportCaughtError(apiError, 'api.request', response.status)
+    }
+    throw apiError
   }
 
   return parseJson<T>(response)
@@ -53,11 +58,15 @@ export async function fetchTeachingsPage(
   if (pageUrl?.startsWith('http')) {
     const response = await fetch(pageUrl)
     if (!response.ok) {
-      throw new ApiError(
+      const apiError = new ApiError(
         `API ${response.status}`,
         response.status,
         await parseJson(response),
       )
+      if (response.status >= 500) {
+        reportCaughtError(apiError, 'api.fetchTeachingsPage', response.status)
+      }
+      throw apiError
     }
     return parseJson<PaginatedResponse<Teaching>>(response)
   }

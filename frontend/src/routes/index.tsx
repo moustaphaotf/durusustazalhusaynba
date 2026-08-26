@@ -9,6 +9,7 @@ import { StickyPlayer } from '#/components/StickyPlayer'
 import { TeachingRow } from '#/components/TeachingRow'
 import { useAudioPlayer } from '#/contexts/AudioPlayerContext'
 import { fetchCategories, fetchTeachingsPage } from '#/lib/api'
+import { reportCaughtError } from '#/lib/error-reporting'
 import {
   buildCategoryFilters,
   filterByCategory,
@@ -47,7 +48,8 @@ function Home() {
       setNextPage(teachingsPage.next)
       setTotalCount(teachingsPage.count)
       setCategories(cats)
-    } catch {
+    } catch (err) {
+      reportCaughtError(err, 'Home.loadInitial')
       setError('Impossible de charger les enseignements. Vérifiez votre connexion.')
     } finally {
       setLoading(false)

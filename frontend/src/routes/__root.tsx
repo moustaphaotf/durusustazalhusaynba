@@ -6,8 +6,11 @@ import {
 } from '@tanstack/react-router'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
+import { useEffect } from 'react'
 
+import { ErrorReporter } from '#/components/ErrorReporter'
 import { AudioPlayerProvider } from '#/contexts/AudioPlayerContext'
+import { reportCaughtError } from '#/lib/error-reporting'
 import appCss from '../styles.css?url'
 
 export const Route = createRootRoute({
@@ -37,11 +40,30 @@ export const Route = createRootRoute({
   }),
   component: RootComponent,
   shellComponent: RootDocument,
+  errorComponent: RootErrorComponent,
 })
+
+function RootErrorComponent({ error }: { error: unknown }) {
+  useEffect(() => {
+    reportCaughtError(error, 'router.errorComponent')
+  }, [error])
+
+  return (
+    <div className="mx-auto flex min-h-[50vh] max-w-lg flex-col items-center justify-center gap-4 px-6 text-center">
+      <h1 className="font-display text-2xl text-stone-900">
+        Une erreur est survenue
+      </h1>
+      <p className="text-stone-600">
+        L&apos;équipe a été notifiée. Rechargez la page ou réessayez plus tard.
+      </p>
+    </div>
+  )
+}
 
 function RootComponent() {
   return (
     <AudioPlayerProvider>
+      <ErrorReporter />
       <Outlet />
     </AudioPlayerProvider>
   )
